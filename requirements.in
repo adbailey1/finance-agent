@@ -1,0 +1,11 @@
+streamlit
+pandas
+matplotlib
+seaborn
+python-dotenv
+langchain
+langchain-google-vertexai
+langchain-community
+langchain-tavily
+langgraph
+sqlalchemy
