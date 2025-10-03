@@ -46,6 +46,34 @@ table_info = {
      "shareholder_investment_2020": "The type of investor (management, retail, institution etc) and their holdings on companies."
 }
 
+@st.cache_resource
+def get_gcp_credentials():
+    """
+    Loads Google Cloud credentials securely. In Streamlit Cloud, it uses a JSON 
+    string from secrets. Locally, it falls back to Application Default Credentials.
+    """
+    # Check if we are in the Streamlit Cloud environment by looking for the specific secret
+    if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
+        print("Loading credentials from Streamlit secrets...")
+        gcp_json_credentials_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
+        if not gcp_json_credentials_str:
+            st.error("GCP_SERVICE_ACCOUNT_JSON secret is empty!")
+            return None
+        try:
+            credentials_info = json.loads(gcp_json_credentials_str)
+            return service_account.Credentials.from_service_account_info(credentials_info)
+        except json.JSONDecodeError:
+            st.error("Failed to parse GCP_SERVICE_ACCOUNT_JSON. Please ensure it's a valid JSON string.")
+            return None
+    else:
+        # If not on Streamlit (i.e., running locally), we can use the default credentials
+        # set up by the `gcloud auth application-default login` command.
+        print("Using Application Default Credentials for local development.")
+        return None # The library will automatically find local ADC
+
+# Load the credentials once at the start of the app
+GCP_CREDENTIALS = get_gcp_credentials()
+
 def download_db_from_gcs():
     """
     Downloads the database from a private GCS bucket using secrets.
@@ -53,12 +81,8 @@ def download_db_from_gcs():
     gcs_bucket_name = st.secrets.get("GCS_BUCKET_NAME")
     gcs_file_path = st.secrets.get("GCS_FILE_PATH")
     
-    # Authenticate with Google Cloud using the service account JSON
-    gcp_json_credentials = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
-    credentials = service_account.Credentials.from_service_account_info(json.loads(gcp_json_credentials))
-    
     # Create the client and download the file
-    storage_client = storage.Client(project=PROJECT_ID, credentials=credentials)
+    storage_client = storage.Client(project=PROJECT_ID, credentials=GCP_CREDENTIALS)
     bucket = storage_client.bucket(gcs_bucket_name)
     blob = bucket.blob(gcs_file_path)
     
@@ -68,8 +92,7 @@ def download_db_from_gcs():
     print(f"Database downloaded to {DB_FILE_PATH}")
 
 # Check if the app is running on Streamlit Cloud
-IS_DEPLOYED = "STREAMLIT_SERVER_RUNNING_ON" in os.environ
-
+IS_DEPLOYED = "GCP_SERVICE_ACCOUNT_JSON" in st.secrets
 if IS_DEPLOYED and not os.path.exists(DB_FILE_PATH):
     download_db_from_gcs()
 
@@ -93,7 +116,7 @@ def sql_research_analyst(query: str) -> str:
     """
     print(f"--- SQL Research Analyst Tool invoked with query: {query} ---")
     db = SQLDatabase.from_uri(f"sqlite:///{DB_FILE_PATH}", sample_rows_in_table_info=3)
-    llm = ChatVertexAI(model_name="gemini-2.5-pro", project=PROJECT_ID, location=LOCATION, temperature=0)
+    llm = ChatVertexAI(model_name="gemini-2.5-pro", project=PROJECT_ID, location=LOCATION, temperature=0, credentials=GCP_CREDENTIALS)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
     tools = toolkit.get_tools()
     prompt = hub.pull("hwchase17/react-chat").partial(
@@ -116,7 +139,7 @@ def data_visualization_specialist(query: str):
     print(f"--- Data Visualization Specialist Tool invoked with query: {query} ---")
     db = SQLDatabase.from_uri(f"sqlite:///{DB_FILE_PATH}")
     schema = db.get_table_info()
-    llm = ChatVertexAI(model_name="gemini-2.5-pro", project=PROJECT_ID, location=LOCATION, temperature=0)
+    llm = ChatVertexAI(model_name="gemini-2.5-pro", project=PROJECT_ID, location=LOCATION, temperature=0, credentials=GCP_CREDENTIALS)
     
     code_generation_prompt = f"""
     You are a data science code generation assistant. Your task is to convert a user's request into a single block of Python code to generate a visualization.
@@ -152,7 +175,8 @@ def get_master_agent():
     llm = ChatVertexAI(model_name="gemini-2.5-flash", 
                        project=PROJECT_ID, 
                        location=LOCATION, 
-                       temperature=0)
+                       temperature=0, 
+                       credentials=GCP_CREDENTIALS)
     
     tools = [sql_research_analyst, data_visualization_specialist, web_research_analyst]
     
@@ -186,6 +210,11 @@ st.set_page_config(page_title="Financial Agent", layout="wide")
 st.title("🤖 Master Agent")
 
 agent_executor = get_master_agent()
+
+# Check if credentials loaded successfully before proceeding
+if IS_DEPLOYED and GCP_CREDENTIALS is None:
+    st.error("Failed to load Google Cloud credentials from Streamlit secrets. Please check your configuration.")
+    st.stop()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
