@@ -8,6 +8,7 @@ import streamlit as st
 from typing import TypedDict, Annotated, List
 import operator
 import uuid
+import json
 
 # LangChain imports
 from langchain_community.utilities import SQLDatabase
@@ -25,6 +26,9 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_tavily import TavilySearch
 
+from google.oauth2 import service_account
+from google.cloud import storage
+
 
 # --- Configuration ---
 LOCATION = "us-central1"
@@ -32,7 +36,7 @@ DB_FILE_PATH = "RAG_data/financial_data.db"
 MEMORY_SIZE = 10
 
 load_dotenv()
-PROJECT_ID = os.getenv("PROJECT_ID", "not-set")
+PROJECT_ID = st.secrets.get("PROJECT_ID", os.getenv("PROJECT_ID"))
 
 table_info = {
      "board_profile_2020": "Contains detailed profiles for all board memebers, including their role, tenure, and profession.",
@@ -41,6 +45,33 @@ table_info = {
      "management_pay_2020": "The salaries (if known) of board members and management for all companies ranging from 2017-2020.", 
      "shareholder_investment_2020": "The type of investor (management, retail, institution etc) and their holdings on companies."
 }
+
+def download_db_from_gcs():
+    """
+    Downloads the database from a private GCS bucket using secrets.
+    """
+    gcs_bucket_name = st.secrets.get("GCS_BUCKET_NAME")
+    gcs_file_path = st.secrets.get("GCS_FILE_PATH")
+    
+    # Authenticate with Google Cloud using the service account JSON
+    gcp_json_credentials = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
+    credentials = service_account.Credentials.from_service_account_info(json.loads(gcp_json_credentials))
+    
+    # Create the client and download the file
+    storage_client = storage.Client(project=PROJECT_ID, credentials=credentials)
+    bucket = storage_client.bucket(gcs_bucket_name)
+    blob = bucket.blob(gcs_file_path)
+    
+    # Ensure the local directory exists
+    os.makedirs(os.path.dirname(DB_FILE_PATH), exist_ok=True)
+    blob.download_to_filename(DB_FILE_PATH)
+    print(f"Database downloaded to {DB_FILE_PATH}")
+
+# Check if the app is running on Streamlit Cloud
+IS_DEPLOYED = "STREAMLIT_SERVER_RUNNING_ON" in os.environ
+
+if IS_DEPLOYED and not os.path.exists(DB_FILE_PATH):
+    download_db_from_gcs()
 
 @tool
 def web_research_analyst(query: str) -> str:
