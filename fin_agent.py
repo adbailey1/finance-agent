@@ -6,24 +6,14 @@ import seaborn as sns
 from dotenv import load_dotenv
 import streamlit as st
 from typing import TypedDict, Annotated, List
-import operator
-import uuid
 import json
 
-# LangChain imports
 from langchain_community.utilities import SQLDatabase
 from langchain.agents import AgentExecutor, create_react_agent, tool
-# from langchain.agents.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.agent_toolkits.sql.toolkit import SQLDatabaseToolkit
-# from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain import hub
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_google_vertexai import ChatVertexAI
-from langchain.memory import ConversationBufferMemory
-from langchain_community.tools.tavily_search import TavilySearchResults
-# LangGraph imports
-from langgraph.graph import StateGraph, END, START
-from langgraph.checkpoint.memory import MemorySaver
 from langchain_tavily import TavilySearch
 
 from google.oauth2 import service_account
@@ -192,9 +182,6 @@ def get_master_agent():
     )
     
     agent_runnable = create_react_agent(llm, tools, prompt)
-    # memory = ConversationBufferMemory(memory_key="chat_history", 
-    #                                   return_messages=True,
-    #                                   k=MEMORY_SIZE)
     
     return AgentExecutor(
         agent=agent_runnable,
