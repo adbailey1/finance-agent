@@ -1,0 +1,5 @@
+# Ignore the local environment file
+.env
+
+# Ignore the sensitive database file
+RAG_data/financial_data.db
