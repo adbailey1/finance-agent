@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from dotenv import load_dotenv
 import streamlit as st
-from typing import TypedDict, Annotated, List
+from typing import List
 import json
 
 from langchain_community.utilities import SQLDatabase
@@ -26,7 +26,6 @@ DB_FILE_PATH = "RAG_data/financial_data.db"
 MEMORY_SIZE = 10
 
 load_dotenv()
-PROJECT_ID = st.secrets.get("PROJECT_ID", os.getenv("PROJECT_ID"))
 
 table_info = {
      "board_profile_2020": "Contains detailed profiles for all board memebers, including their role, tenure, and profession.",
@@ -36,33 +35,70 @@ table_info = {
      "shareholder_investment_2020": "The type of investor (management, retail, institution etc) and their holdings on companies."
 }
 
+st.subheader("Secrets Health Check")
+secrets_ok = True
+if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets and st.secrets["GCP_SERVICE_ACCOUNT_JSON"]:
+    st.success("✅ GCP_SERVICE_ACCOUNT_JSON secret found.")
+    try:
+        # Test if the JSON is valid
+        json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+        st.success("✅ GCP_SERVICE_ACCOUNT_JSON is valid JSON.")
+    except (json.JSONDecodeError, TypeError):
+        st.error("❌ GCP_SERVICE_ACCOUNT_JSON is NOT valid JSON. Please check your copy-paste.")
+        secrets_ok = False
+else:
+    st.error("❌ GCP_SERVICE_ACCOUNT_JSON secret NOT found or is empty.")
+    secrets_ok = False
+
+if "PROJECT_ID" in st.secrets and st.secrets["PROJECT_ID"]:
+    st.success("✅ PROJECT_ID secret found.")
+else:
+    st.warning("⚠️ PROJECT_ID secret not found. Using local .env value (if available).")
+
+# Stop the app if secrets are not configured correctly in the deployed environment
+if "STREAMLIT_SERVER_RUNNING_ON" in os.environ and not secrets_ok:
+    st.stop()
+
+# @st.cache_resource
+# def get_gcp_credentials():
+#     """
+#     Loads Google Cloud credentials securely. In Streamlit Cloud, it uses a JSON 
+#     string from secrets. Locally, it falls back to Application Default Credentials.
+#     """
+#     # Check if we are in the Streamlit Cloud environment by looking for the specific secret
+#     if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
+#         print("Loading credentials from Streamlit secrets...")
+#         gcp_json_credentials_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
+#         if not gcp_json_credentials_str:
+#             st.error("GCP_SERVICE_ACCOUNT_JSON secret is empty!")
+#             return None
+#         try:
+#             credentials_info = json.loads(gcp_json_credentials_str)
+#             return service_account.Credentials.from_service_account_info(credentials_info)
+#         except json.JSONDecodeError:
+#             st.error("Failed to parse GCP_SERVICE_ACCOUNT_JSON. Please ensure it's a valid JSON string.")
+#             return None
+#     else:
+#         # If not on Streamlit (i.e., running locally), we can use the default credentials
+#         # set up by the `gcloud auth application-default login` command.
+#         print("Using Application Default Credentials for local development.")
+#         return None # The library will automatically find local ADC
+
 @st.cache_resource
 def get_gcp_credentials():
-    """
-    Loads Google Cloud credentials securely. In Streamlit Cloud, it uses a JSON 
-    string from secrets. Locally, it falls back to Application Default Credentials.
-    """
-    # Check if we are in the Streamlit Cloud environment by looking for the specific secret
+    """Loads Google Cloud credentials securely."""
     if "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
-        print("Loading credentials from Streamlit secrets...")
-        gcp_json_credentials_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
-        if not gcp_json_credentials_str:
-            st.error("GCP_SERVICE_ACCOUNT_JSON secret is empty!")
-            return None
         try:
-            credentials_info = json.loads(gcp_json_credentials_str)
+            credentials_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
             return service_account.Credentials.from_service_account_info(credentials_info)
-        except json.JSONDecodeError:
-            st.error("Failed to parse GCP_SERVICE_ACCOUNT_JSON. Please ensure it's a valid JSON string.")
-            return None
+        except (json.JSONDecodeError, TypeError):
+            return None # Fail gracefully
     else:
-        # If not on Streamlit (i.e., running locally), we can use the default credentials
-        # set up by the `gcloud auth application-default login` command.
-        print("Using Application Default Credentials for local development.")
-        return None # The library will automatically find local ADC
-
+        return None # Fallback for local ADC
+    
 # Load the credentials once at the start of the app
 GCP_CREDENTIALS = get_gcp_credentials()
+PROJECT_ID = st.secrets.get("PROJECT_ID", os.getenv("PROJECT_ID"))
 
 def download_db_from_gcs():
     """
@@ -198,63 +234,66 @@ st.title("🤖 Master Agent")
 
 agent_executor = get_master_agent()
 
-# Check if credentials loaded successfully before proceeding
-if IS_DEPLOYED and GCP_CREDENTIALS is None:
-    st.error("Failed to load Google Cloud credentials from Streamlit secrets. Please check your configuration.")
-    st.stop()
+if "STREAMLIT_SERVER_RUNNING_ON" not in os.environ or secrets_ok:
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        if isinstance(message["content"], plt.Figure):
-            st.pyplot(message["content"])
-        else:
-            st.markdown(message["content"])
+    # Check if credentials loaded successfully before proceeding
+    if IS_DEPLOYED and GCP_CREDENTIALS is None:
+        st.error("Failed to load Google Cloud credentials from Streamlit secrets. Please check your configuration.")
+        st.stop()
 
-if prompt := st.chat_input("Ask a question or request a visualization..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                history = st.session_state.messages[:-1]
-                langchain_history = []
-                for msg in history:
-                    if msg['role'] == "user":
-                        langchain_history.append(HumanMessage(content=msg["content"]))
-                    else:
-                        content = msg["content"] if not isinstance(msg["content"], plt.Figure) else "A plot was generated."
-                        langchain_history.append(AIMessage(content=content))
-                # We invoke the agent and get back the intermediate steps
-                # result = agent_executor.invoke({"input": prompt})
-                result = agent_executor.invoke({"input": prompt,
-                                               "chat_history": langchain_history})
-                
-                # Default to the final text answer
-                final_answer = result.get("output", "I encountered an error.")
-                
-                # Check the intermediate steps for a figure
-                if "intermediate_steps" in result and result["intermediate_steps"]:
-                    last_step = result["intermediate_steps"][-1]
-                    action, observation = last_step
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            if isinstance(message["content"], plt.Figure):
+                st.pyplot(message["content"])
+            else:
+                st.markdown(message["content"])
+
+    if prompt := st.chat_input("Ask a question or request a visualization..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    history = st.session_state.messages[:-1]
+                    langchain_history = []
+                    for msg in history:
+                        if msg['role'] == "user":
+                            langchain_history.append(HumanMessage(content=msg["content"]))
+                        else:
+                            content = msg["content"] if not isinstance(msg["content"], plt.Figure) else "A plot was generated."
+                            langchain_history.append(AIMessage(content=content))
+                    # We invoke the agent and get back the intermediate steps
+                    # result = agent_executor.invoke({"input": prompt})
+                    result = agent_executor.invoke({"input": prompt,
+                                                "chat_history": langchain_history})
                     
-                    # If the last action was our viz tool and it returned a figure, use that!
-                    if action.tool == "data_visualization_specialist" and isinstance(observation, plt.Figure):
-                        final_answer = observation
+                    # Default to the final text answer
+                    final_answer = result.get("output", "I encountered an error.")
+                    
+                    # Check the intermediate steps for a figure
+                    if "intermediate_steps" in result and result["intermediate_steps"]:
+                        last_step = result["intermediate_steps"][-1]
+                        action, observation = last_step
+                        
+                        # If the last action was our viz tool and it returned a figure, use that!
+                        if action.tool == "data_visualization_specialist" and isinstance(observation, plt.Figure):
+                            final_answer = observation
 
-                if isinstance(final_answer, plt.Figure):
-                    st.pyplot(final_answer)
-                else:
-                    st.markdown(final_answer)
-                
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    if isinstance(final_answer, plt.Figure):
+                        st.pyplot(final_answer)
+                    else:
+                        st.markdown(final_answer)
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
-                if len(st.session_state.messages) > MEMORY_SIZE:
-                    st.session_state.messages = st.session_state.messages[-MEMORY_SIZE:]
+                    if len(st.session_state.messages) > MEMORY_SIZE:
+                        st.session_state.messages = st.session_state.messages[-MEMORY_SIZE:]
 
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
